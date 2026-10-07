@@ -20,7 +20,10 @@ scripts/libass-config
 scripts/libass-build "$@"
 scripts/dav1d-config
 scripts/dav1d-build "$@"
+# Preserve the upstream allowlist and add the music analysis requirements.
+printf '%s\n' '--enable-filter=astats,asplit,bandpass,amerge' >> ffmpeg_options
 scripts/ffmpeg-config
 scripts/ffmpeg-build "$@"
 scripts/mpv-config
 scripts/mpv-build "$@"
+python3 "${GITHUB_WORKSPACE}/tests/audio_filters.py" mpv/build/libmpv.so.2
