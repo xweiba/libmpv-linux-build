@@ -1,0 +1,27 @@
+#!/bin/sh
+# Static, PIC libxml2 for FFmpeg's DASH demuxer. Linked into libmpv.so and
+# hidden there (see build), so the release does not depend on the host's
+# libxml2 soname (libxml2.so.2 vs libxml2.so.16).
+set -e
+BUILD="$(pwd)"
+LIBXML2_REF="${LIBXML2_REF:-v2.14.6}"
+
+if ! test -d "$BUILD"/libxml2 ; then
+    git clone --depth 1 --branch "$LIBXML2_REF" \
+        https://github.com/GNOME/libxml2.git "$BUILD"/libxml2
+fi
+
+cmake -S "$BUILD"/libxml2 -B "$BUILD"/libxml2/build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DLIBXML2_WITH_PYTHON=OFF \
+    -DLIBXML2_WITH_LZMA=OFF \
+    -DLIBXML2_WITH_ZLIB=OFF \
+    -DLIBXML2_WITH_ICU=OFF \
+    -DLIBXML2_WITH_HTTP=OFF \
+    -DLIBXML2_WITH_MODULES=OFF \
+    -DLIBXML2_WITH_TESTS=OFF \
+    -DLIBXML2_WITH_PROGRAMS=OFF \
+    -DCMAKE_INSTALL_PREFIX="$BUILD/build_libs" \
+    -DCMAKE_INSTALL_LIBDIR=lib "$@"

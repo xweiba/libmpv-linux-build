@@ -20,10 +20,12 @@ scripts/libass-config
 scripts/libass-build "$@"
 scripts/dav1d-config
 scripts/dav1d-build "$@"
-# Preserve the upstream allowlist and add the music analysis requirements.
-printf '%s\n' '--enable-filter=astats,asplit,bandpass,amerge' >> ffmpeg_options
+scripts/libxml2-config
+scripts/libxml2-build "$@"
 scripts/ffmpeg-config
 scripts/ffmpeg-build "$@"
-scripts/mpv-config
+# Keep the static libxml2 (DASH) private to libmpv.so: never interpose the
+# host's libxml2 used by other libraries such as libarchive.
+LDFLAGS="$LDFLAGS -Wl,--exclude-libs,libxml2.a" scripts/mpv-config
 scripts/mpv-build "$@"
 python3 "${GITHUB_WORKSPACE}/tests/audio_filters.py" mpv/build/libmpv.so.2

@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+
+cmake --build libxml2/build "$@"
+cmake --install libxml2/build

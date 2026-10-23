@@ -11,5 +11,6 @@ scripts/libdisplay-info-clean
 scripts/libass-clean
 scripts/libplacebo-clean
 scripts/dav1d-clean
+scripts/libxml2-clean
 scripts/mpv-clean
 rm -rf build_libs

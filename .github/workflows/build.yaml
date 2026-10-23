@@ -101,6 +101,12 @@ jobs:
         printf "%s\n" "--enable-muxer=*jpeg,fifo,flv,gif,hls,h264,hevc,image2,mov,mp4,mpegts,matroska,null,pcm*,rawvideo,rt*,spdif,*pipe,*segment,webm,wav" >> ffmpeg_options
         printf "%s\n" "--enable-protocol=cache,concat*,crypto*,data,fd,*file,ftp,h*,i*,pipe,rt*,s*,t*,u*" >> ffmpeg_options
         printf "%s\n" "--enable-filter=*null*,afade,*fifo,*format,*resample,aeval,atempo,pan,crop,eq*,framerate,hw*,loudnorm,scale,volume,yadif*" >> ffmpeg_options
+        # PaoPao capability set (see PATCHES.md): spectrum/audio filter graph,
+        # original-audio cache export and DASH (libxml2, built statically).
+        printf "%s\n" "--enable-filter=overlay,equalizer,astats,aresample,aformat,anull,asplit,pan,bandpass,amerge" >> ffmpeg_options
+        printf "%s\n" "--enable-muxer=mp4,mov" >> ffmpeg_options
+        printf "%s\n" "--enable-bsf=aac_adtstoasc" >> ffmpeg_options
+        printf "%s\n" "--enable-libxml2" >> ffmpeg_options
 
         > mpv_options
         printf "%s\n" -Dlibmpv=true >> mpv_options
