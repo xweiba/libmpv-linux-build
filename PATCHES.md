@@ -42,6 +42,10 @@ Added on top of the upstream allowlist (`build.yaml`):
   (`external/scripts/libxml2-*`) and hidden with `--exclude-libs`, so
   `libmpv.so.2` does not depend on the host libxml2 soname.
 
+## Release
+
+`20261023` (workflow run 39900907534); asset sha256 values are listed in AUDIO_FILTERS.md.
+
 ## Tests
 
 Run after every CI build on the packaged `libmpv.so.2` (x86_64 and aarch64):
