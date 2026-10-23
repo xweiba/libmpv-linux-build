@@ -177,6 +177,16 @@ jobs:
         mkdir -p $GITHUB_WORKSPACE/artifacts
         cp -r mpv/build/* $GITHUB_WORKSPACE/artifacts
 
+    - name: Test libmpv
+      run: |
+        sudo apt install -y ffmpeg
+        LIBMPV="$GITHUB_WORKSPACE/artifacts/libmpv.so.2"
+        python3 tests/check_library.py "$LIBMPV"
+        python3 tests/audio_filters.py "$LIBMPV"
+        sh tests/mediaio_fixtures.sh "$RUNNER_TEMP/mediaio"
+        cc -O1 -g -Wall -Iinclude tests/mediaio_nested.c -o "$RUNNER_TEMP/mediaio_nested" -ldl -lpthread
+        "$RUNNER_TEMP/mediaio_nested" "$LIBMPV" "$RUNNER_TEMP/mediaio"
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
