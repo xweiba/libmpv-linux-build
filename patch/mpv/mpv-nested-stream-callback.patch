@@ -1,0 +1,244 @@
+diff --git a/demux/demux_lavf.c b/demux/demux_lavf.c
+index 7013dbd..d7e1a3f 100644
+--- a/demux/demux_lavf.c
++++ b/demux/demux_lavf.c
+@@ -54,6 +54,7 @@
+ #include "options/m_config.h"
+ #include "options/m_option.h"
+ #include "options/path.h"
++#include "player/client.h"
+ 
+ #define INITIAL_PROBE_SIZE STREAM_BUFFER_SIZE
+ #define PROBE_BUF_SIZE (10 * 1024 * 1024)
+@@ -213,6 +214,8 @@ static const struct format_hack format_hacks[] = {
+ struct nested_stream {
+     AVIOContext *id;
+     int64_t last_bytes;
++    struct stream *stream;
++    bool stream_cb;
+ };
+ 
+ struct stream_info {
+@@ -915,6 +918,109 @@ static int block_io_open(struct AVFormatContext *s, AVIOContext **pb,
+     return AVERROR(EACCES);
+ }
+ 
++static int nested_stream_read(void *opaque, uint8_t *buf, int size)
++{
++    struct stream *stream = opaque;
++    int ret = stream_read_partial(stream, buf, size);
++    return ret ? ret : AVERROR_EOF;
++}
++
++static int64_t nested_stream_seek(void *opaque, int64_t pos, int whence)
++{
++    struct stream *stream = opaque;
++    if (whence == AVSEEK_SIZE)
++        return stream_get_size(stream);
++    if (whence == SEEK_END) {
++        int64_t size = stream_get_size(stream);
++        if (size < 0)
++            return AVERROR(ENOSYS);
++        pos += size;
++    } else if (whence == SEEK_CUR) {
++        pos += stream_tell(stream);
++    } else if (whence != SEEK_SET) {
++        return AVERROR(EINVAL);
++    }
++    return stream_seek(stream, pos) ? stream_tell(stream) : AVERROR(EIO);
++}
++
++static bool nested_stream_cb_is_allowed(struct demuxer *demuxer,
++                                        const char *url,
++                                        AVDictionary **options)
++{
++    bstr protocol = mp_split_proto(bstr0(url), NULL);
++    if (!protocol.len)
++        return false;
++
++    char *name = bstrto0(NULL, protocol);
++    void *user_data;
++    mpv_stream_cb_open_ro_fn open_fn;
++    bool registered = mp_streamcb_lookup(demuxer->global, name,
++                                         &user_data, &open_fn);
++    AVDictionaryEntry *whitelist = options && *options
++        ? av_dict_get(*options, "protocol_whitelist", NULL, 0)
++        : NULL;
++    bool allowed = registered && whitelist &&
++                   av_match_name(name, whitelist->value);
++    talloc_free(name);
++    return allowed;
++}
++
++static int nested_stream_cb_open(struct demuxer *demuxer, AVIOContext **pb,
++                                 const char *url)
++{
++    if (mp_cancel_test(demuxer->cancel))
++        return AVERROR_EXIT;
++
++    lavf_priv_t *priv = demuxer->priv;
++    int origin = priv->stream->stream_origin;
++    struct stream *stream = stream_create(url, STREAM_READ | origin,
++                                          demuxer->cancel, demuxer->global);
++    if (!stream)
++        return mp_cancel_test(demuxer->cancel) ? AVERROR_EXIT : AVERROR(EIO);
++    if (mp_cancel_test(demuxer->cancel)) {
++        free_stream(stream);
++        return AVERROR_EXIT;
++    }
++
++    unsigned char *buffer = av_malloc(BIO_BUFFER_SIZE);
++    if (!buffer) {
++        free_stream(stream);
++        return AVERROR(ENOMEM);
++    }
++    AVIOContext *avio = avio_alloc_context(buffer, BIO_BUFFER_SIZE, 0, stream,
++                                           nested_stream_read, NULL,
++                                           nested_stream_seek);
++    if (!avio) {
++        av_free(buffer);
++        free_stream(stream);
++        return AVERROR(ENOMEM);
++    }
++    avio->seekable = stream->seekable ? AVIO_SEEKABLE_NORMAL : 0;
++    *pb = avio;
++    struct nested_stream nest = {
++        .id = avio,
++        .stream = stream,
++        .stream_cb = true,
++    };
++    MP_TARRAY_APPEND(priv, priv->nested, priv->num_nested, nest);
++    return 0;
++}
++
++// Release a callback-backed nested entry: the mpv stream, the current AVIO
++// buffer (FFmpeg may have reallocated it) and the AVIO shell itself.
++static void nested_stream_cb_free(struct nested_stream *nest)
++{
++    if (nest->stream) {
++        stream_cb_detach_cancel(nest->stream);
++        free_stream(nest->stream);
++    }
++    nest->stream = NULL;
++    if (nest->id) {
++        av_freep(&nest->id->buffer);
++        avio_context_free(&nest->id);
++    }
++}
++
+ static int nested_io_open(struct AVFormatContext *s, AVIOContext **pb,
+                           const char *url, int flags, AVDictionary **options)
+ {
+@@ -939,6 +1045,17 @@ static int nested_io_open(struct AVFormatContext *s, AVIOContext **pb,
+         }
+     }
+ 
++    bool top_level = !s->pb;
++    if (!(flags & AVIO_FLAG_WRITE) &&
++        nested_stream_cb_is_allowed(demuxer, url, options)) {
++        int r = nested_stream_cb_open(demuxer, pb, url);
++        // The top-level input (HLS/DASH manifest with no_stream) must never
++        // reach avio_close(): its opaque is an mpv stream, not a URLContext.
++        if (r >= 0 && top_level)
++            s->flags |= AVFMT_FLAG_CUSTOM_IO;
++        return r;
++    }
++
+     int r = priv->default_io_open(s, pb, url, flags, options);
+     if (r >= 0) {
+         if (options)
+@@ -957,8 +1074,26 @@ static int nested_io_close2(struct AVFormatContext *s, AVIOContext *pb)
+     mp_require(demuxer);
+     lavf_priv_t *priv = demuxer->priv;
+ 
++    // FFmpeg demuxers can route the caller-owned top-level AVIOContext
++    // through io_close2 while tearing down nested manifests. mpv releases
++    // priv->pb in demux_close_lavf.
++    if (pb && pb == priv->pb)
++        return 0;
++
+     for (int n = 0; n < priv->num_nested; n++) {
+         if (priv->nested[n].id == pb) {
++            if (priv->nested[n].stream_cb) {
++                // HLS can close the same nested input more than once. Keep the
++                // AVIO shell as a tombstone so a repeated close never falls
++                // through to avio_close(), which treats opaque as URLContext.
++                // demux_close_lavf() frees the shell.
++                if (priv->nested[n].stream) {
++                    free_stream(priv->nested[n].stream);
++                    priv->nested[n].stream = NULL;
++                    av_freep(&pb->buffer);
++                }
++                return 0;
++            }
+             MP_TARRAY_REMOVE_AT(priv->nested, priv->num_nested, n);
+             break;
+         }
+@@ -1417,7 +1552,31 @@ static void demux_close_lavf(demuxer_t *demuxer)
+     if (priv) {
+         // This will be a dangling pointer; but see below.
+         AVIOContext *leaking = priv->avfc ? priv->avfc->pb : NULL;
++        // HLS bypasses io_close2 for its main playlist. avio_close() assumes
++        // opaque is a URLContext, but this AVIOContext owns an mpv stream.
++        for (int n = 0; priv->avfc && n < priv->num_nested; n++) {
++            if (priv->nested[n].id == leaking && priv->nested[n].stream_cb) {
++                priv->avfc->flags |= AVFMT_FLAG_CUSTOM_IO;
++                break;
++            }
++        }
++        // Detach every still-alive callback stream's cancel from
++        // demuxer->cancel first: destroying that parent with slaves attached
++        // aborts in thread_tools.c cancel_destroy ("!c->slaves.head").
++        for (int n = 0; n < priv->num_nested; n++) {
++            if (priv->nested[n].stream_cb && priv->nested[n].stream)
++                stream_cb_detach_cancel(priv->nested[n].stream);
++        }
+         avformat_close_input(&priv->avfc);
++        // FFmpeg has no further references now: release all callback-backed
++        // entries (open or tombstoned), including the HLS main playlist that
++        // never goes through io_close2.
++        for (int n = priv->num_nested - 1; n >= 0; n--) {
++            if (priv->nested[n].stream_cb) {
++                nested_stream_cb_free(&priv->nested[n]);
++                MP_TARRAY_REMOVE_AT(priv->nested, priv->num_nested, n);
++            }
++        }
+         // The ffmpeg garbage breaks its own API yet again: hls.c will call
+         // io_open on the main playlist, but never calls io_close. This happens
+         // to work out for us (since we don't really use custom I/O), but it's
+diff --git a/stream/stream.h b/stream/stream.h
+index fb62fdd..fe0f6c1 100644
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -244,6 +244,7 @@ struct bstr stream_read_file2(const char *filename, void *talloc_ctx,
+ 
+ int stream_control(stream_t *s, int cmd, void *arg);
+ void free_stream(stream_t *s);
++void stream_cb_detach_cancel(struct stream *stream);
+ 
+ struct stream_open_args {
+     struct mpv_global *global;
+diff --git a/stream/stream_cb.c b/stream/stream_cb.c
+index 27e04a9..4c346e6 100644
+--- a/stream/stream_cb.c
++++ b/stream/stream_cb.c
+@@ -99,6 +99,19 @@ static int open_cb(stream_t *stream)
+     return STREAM_OK;
+ }
+ 
++extern const stream_info_t stream_info_cb;
++
++// Unhook a callback stream's cancel from its parent without closing it. For
++// streams the owner deliberately leaks: the parent may be destroyed first.
++void stream_cb_detach_cancel(struct stream *stream)
++{
++    if (!stream || stream->info != &stream_info_cb)
++        return;
++    struct priv *p = stream->priv;
++    if (p && p->cancel)
++        mp_cancel_set_parent(p->cancel, NULL);
++}
++
+ const stream_info_t stream_info_cb = {
+     .name = "stream_callback",
+     .open = open_cb,
