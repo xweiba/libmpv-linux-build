@@ -1,0 +1,28 @@
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index 7f76e83..88b91a0 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -411,6 +411,9 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+     int proto_name_len;
+     int ret;
+ 
++    if (ff_check_interrupt(c->interrupt_callback))
++        return AVERROR_EXIT;
++
+     if (av_strstart(url, "crypto", NULL)) {
+         if (url[6] == '+' || url[6] == ':')
+             proto_name = avio_find_protocol_name(url + 7);
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index ebab512..7454fc9 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -679,6 +679,9 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+     int ret;
+     int is_http = 0;
+ 
++    if (ff_check_interrupt(c->interrupt_callback))
++        return AVERROR_EXIT;
++
+     if (av_strstart(url, "crypto", NULL)) {
+         if (url[6] == '+' || url[6] == ':')
+             proto_name = avio_find_protocol_name(url + 7);

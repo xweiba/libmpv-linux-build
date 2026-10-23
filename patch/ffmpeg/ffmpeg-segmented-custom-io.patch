@@ -1,0 +1,115 @@
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index 10b3e8a..7f76e83 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -151,6 +151,7 @@ typedef struct DASHContext {
+     int is_live;
+     AVIOInterruptCB *interrupt_callback;
+     char *allowed_extensions;
++    int allow_custom_io;
+     AVDictionary *avio_opts;
+     int max_url_size;
+     char *cenc_decryption_key;
+@@ -418,12 +419,17 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+     if (!proto_name)
+         proto_name = avio_find_protocol_name(url);
+ 
+-    if (!proto_name)
++    if (!proto_name && !c->allow_custom_io)
+         return AVERROR_INVALIDDATA;
+ 
+-    proto_name_len = strlen(proto_name);
+-    // only http(s) & file are allowed
+-    if (av_strstart(proto_name, "file", NULL)) {
++    proto_name_len = proto_name ? strlen(proto_name) : 0;
++    // Keep the existing protocol restrictions unless the application has
++    // explicitly opted into AVFormatContext.io_open for custom protocols.
++    if (!proto_name) {
++        const char *separator = strchr(url, ':');
++        if (!separator || separator == url)
++            return AVERROR_INVALIDDATA;
++    } else if (av_strstart(proto_name, "file", NULL)) {
+         if (strcmp(c->allowed_extensions, "ALL") && !av_match_ext(url, c->allowed_extensions)) {
+             av_log(s, AV_LOG_ERROR,
+                    "Filename extension of \'%s\' is not a common multimedia extension, blocked for security reasons.\n"
+@@ -436,7 +442,9 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+     } else
+         return AVERROR_INVALIDDATA;
+ 
+-    if (!strncmp(proto_name, url, proto_name_len) && url[proto_name_len] == ':')
++    if (!proto_name)
++        ;
++    else if (!strncmp(proto_name, url, proto_name_len) && url[proto_name_len] == ':')
+         ;
+     else if (av_strstart(url, "crypto", NULL) && !strncmp(proto_name, url + 7, proto_name_len) && url[7 + proto_name_len] == ':')
+         ;
+@@ -463,7 +471,7 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+     av_dict_free(&tmp);
+ 
+     if (is_http)
+-        *is_http = av_strstart(proto_name, "http", NULL);
++        *is_http = proto_name != NULL && av_strstart(proto_name, "http", NULL);
+ 
+     return ret;
+ }
+@@ -2368,6 +2376,8 @@ static const AVOption dash_options[] = {
+         OFFSET(allowed_extensions), AV_OPT_TYPE_STRING,
+         {.str = "aac,m4a,m4s,m4v,mov,mp4,webm,ts"},
+         INT_MIN, INT_MAX, FLAGS},
++    {"allow_custom_io", "Allow explicitly configured custom protocols through io_open",
++        OFFSET(allow_custom_io), AV_OPT_TYPE_BOOL, { .i64 = 0}, 0, 1, FLAGS},
+     { "cenc_decryption_key", "Media decryption key (hex)", OFFSET(cenc_decryption_key), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
+     {NULL}
+ };
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 4db2bae..ebab512 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -232,6 +232,7 @@ typedef struct HLSContext {
+     int http_persistent;
+     int http_multiple;
+     int http_seekable;
++    int allow_custom_io;
+     int seg_max_retry;
+     AVIOContext *playlist_pb;
+     HLSCryptoContext  crypto_ctx;
+@@ -689,11 +690,16 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+     if (!proto_name)
+         proto_name = avio_find_protocol_name(url);
+ 
+-    if (!proto_name)
++    if (!proto_name && !c->allow_custom_io)
+         return AVERROR_INVALIDDATA;
+ 
+-    // only http(s) & file are allowed
+-    if (av_strstart(proto_name, "file", NULL)) {
++    // Keep the existing protocol restrictions unless the application has
++    // explicitly opted into AVFormatContext.io_open for custom protocols.
++    if (!proto_name) {
++        const char *separator = strchr(url, ':');
++        if (!separator || separator == url)
++            return AVERROR_INVALIDDATA;
++    } else if (av_strstart(proto_name, "file", NULL)) {
+         if (strcmp(c->allowed_extensions, "ALL") && !av_match_ext(url, c->allowed_extensions)) {
+             av_log(s, AV_LOG_ERROR,
+                 "Filename extension of \'%s\' is not a common multimedia extension, blocked for security reasons.\n"
+@@ -708,7 +714,9 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+     } else
+         return AVERROR_INVALIDDATA;
+ 
+-    if (!strncmp(proto_name, url, strlen(proto_name)) && url[strlen(proto_name)] == ':')
++    if (!proto_name)
++        ;
++    else if (!strncmp(proto_name, url, strlen(proto_name)) && url[strlen(proto_name)] == ':')
+         ;
+     else if (av_strstart(url, "crypto", NULL) && !strncmp(proto_name, url + 7, strlen(proto_name)) && url[7 + strlen(proto_name)] == ':')
+         ;
+@@ -2878,6 +2886,8 @@ static const AVOption hls_options[] = {
+         OFFSET(http_multiple), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, FLAGS},
+     {"http_seekable", "Use HTTP partial requests, 0 = disable, 1 = enable, -1 = auto",
+         OFFSET(http_seekable), AV_OPT_TYPE_BOOL, { .i64 = -1}, -1, 1, FLAGS},
++    {"allow_custom_io", "Allow explicitly configured custom protocols through io_open",
++        OFFSET(allow_custom_io), AV_OPT_TYPE_BOOL, { .i64 = 0}, 0, 1, FLAGS},
+     {"seg_format_options", "Set options for segment demuxer",
+         OFFSET(seg_format_opts), AV_OPT_TYPE_DICT, {.str = NULL}, 0, 0, FLAGS},
+     {"seg_max_retry", "Maximum number of times to reload a segment on error.",
